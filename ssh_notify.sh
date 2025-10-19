@@ -4,7 +4,7 @@
 # ============================================================
 
 # 读取 .env 文件中的环境变量
-source ssh_notify.sh.env
+source /etc/profile.d/ssh_notify.sh.env
 
 # 获取信息
 HOSTNAME=$(hostname)
