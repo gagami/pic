@@ -124,7 +124,7 @@ safe_apt install wget curl git screen tmux tar unzip aria2 ca-certificates gnupg
 lsb-release build-essential make gcc automake autoconf libtool libssl-dev \
 libpam0g-dev net-tools iptables-persistent chrony fail2ban rsyslog ethtool net-tools iproute2
 
-sensors-detect --auto
+#sensors-detect --auto
 log "✅ 基础软件包已安装"
 
 # ------------------------------------------------
