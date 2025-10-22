@@ -1183,7 +1183,7 @@ find /tmp -type f -mtime +7 -delete 2>/dev/null || true
 find /var/tmp -type f -mtime +7 -delete 2>/dev/null || true
 
 # 设置日志轮转
-cat > /etc/logrotate.d/custom << 'EOF
+cat > /etc/logrotate.d/custom << EOF
 /var/log/*.log {
     daily
     missingok
@@ -1271,7 +1271,7 @@ echo "磁盘使用: $(df -h / | awk 'NR==2 {print $3" $5}')"
 echo "系统负载: $(uptime | awk -F'load average:' '{print $2, $3, $4}')"
 EOF
 
-cat > /etc/update-modd.d/30-network << 'EOF'
+cat > /etc/update-motd.d/30-network << 'EOF'
 #!/bin/sh
 echo "网络接口:"
 ip -4 addr show | grep -E "inet\b" | awk '{print "  " $2 ": " $4}' || true
