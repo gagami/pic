@@ -3,19 +3,52 @@
 # VPS 系统状态检查脚本 (优化版 v3.0)
 # 全面检查系统配置、性能、安全状态，并提供修复建议
 # 作者: yagami + ChatGPT 重构优化
-# 系统: Ubuntu 22.04+
+# 系统: Ubuntu 22.04+, Debian 12+
 # ================================================
 
 set -euo pipefail
 
 # 全局变量
-SCRIPT_VERSION="3.0"
+SCRIPT_VERSION="3.1"
 LOG_FILE="/var/log/vps_check.log"
 START_TIME=$(date +%s)
 ERROR_COUNT=0
 WARNING_COUNT=0
 SUCCESS_COUNT=0
 FIX_AVAILABLE=0
+
+# 系统检测
+detect_system() {
+    if [[ -f /etc/os-release ]]; then
+        . /etc/os-release
+        DISTRO=$ID
+        DISTRO_VERSION=$VERSION_ID
+    else
+        DISTRO="unknown"
+        DISTRO_VERSION="unknown"
+    fi
+
+    log "INFO" "检测到系统: $DISTRO $DISTRO_VERSION"
+
+    # 设置系统特定的包名和服务名
+    case "$DISTRO" in
+        "debian")
+            # Debian 12 使用 systemd-journald
+            SYSLOG_SERVICE="systemd-journald"
+            LOG_SERVICE="systemd-journald"
+            ;;
+        "ubuntu")
+            # Ubuntu 使用 rsyslog
+            SYSLOG_SERVICE="rsyslog"
+            LOG_SERVICE="rsyslog"
+            ;;
+        *)
+            # 默认尝试 rsyslog
+            SYSLOG_SERVICE="rsyslog"
+            LOG_SERVICE="rsyslog"
+            ;;
+    esac
+}
 
 # 颜色定义
 RED='\033[0;31m'
@@ -237,11 +270,26 @@ check_packages() {
         "net-tools:网络工具"
         "chrony:时间同步"
         "fail2ban:安全防护"
-        "rsyslog:日志服务"
         "ethtool:网卡工具"
         "iptables-persistent:防火墙持久化"
         "software-properties-common:软件源管理"
     )
+
+    # 根据系统类型调整软件包
+    case "$DISTRO" in
+        "debian")
+            # Debian 12 默认使用 systemd-journald，rsyslog是可选的
+            packages+=("rsyslog:日志服务")
+            ;;
+        "ubuntu")
+            # Ubuntu 需要rsyslog
+            packages+=("rsyslog:日志服务")
+            ;;
+        *)
+            # 其他系统默认包含rsyslog
+            packages+=("rsyslog:日志服务")
+            ;;
+    esac
 
     local installed_count=0
     local total_count=${#packages[@]}
@@ -499,7 +547,7 @@ check_services() {
         "ssh:SSH服务"
         "fail2ban:入侵防护"
         "chrony:时间同步"
-        "rsyslog:日志服务"
+        "$SYSLOG_SERVICE:日志服务"
         "nginx:Web服务器"
         "apache2:Web服务器"
         "mysql:数据库服务"
@@ -630,8 +678,19 @@ check_disk_space() {
 check_security() {
     log "INFO" "检查安全配置..."
 
+    # 检测日志路径
+    local auth_log_path="/var/log/auth.log"
+    if [[ ! -f "$auth_log_path" ]]; then
+        auth_log_path="/var/log/secure"
+    fi
+    if [[ ! -f "$auth_log_path" ]]; then
+        auth_log_path="/var/log/messages"
+    fi
+
+    log "INFO" "使用安全日志路径: $auth_log_path"
+
     # 检查登录失败记录
-    local failed_logins=$(grep "Failed password" /var/log/auth.log 2>/dev/null | wc -l || echo "0")
+    local failed_logins=$(grep "Failed password" "$auth_log_path" 2>/dev/null | wc -l || echo "0")
     if [[ $failed_logins -gt 100 ]]; then
         log "WARN" "检测到大量登录失败尝试: $failed_logins 次"
     fi
@@ -742,6 +801,9 @@ main() {
     echo
 
     check_permissions
+
+    # 系统检测
+    detect_system
 
     # 系统信息检查
     check_system_info
