@@ -913,8 +913,8 @@ if ! wait_for_apt_lock; then
 fi
 
 # 尝试安装内核，带重试机制
-local max_retries=2
-local retry_count=0
+max_retries=2
+retry_count=0
 
 while [[ $retry_count -lt $max_retries ]]; do
     if DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a apt-get install -yqq "$PKG"; then
@@ -922,7 +922,7 @@ while [[ $retry_count -lt $max_retries ]]; do
         break
     else
         retry_count=$((retry_count + 1))
-        local exit_code=$?
+        exit_code=$?
 
         if [[ $retry_count -lt $max_retries ]]; then
             log "WARN" "内核安装失败，尝试 $retry_count/$max_retries，等待10秒后重试..."
