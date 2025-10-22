@@ -658,13 +658,47 @@ kernel.threads-max = 65535
 EOF
 
 # 应用内核参数
-if ! sysctl --system; then
+if ! sysctl --system 2>&1 | tee /tmp/sysctl_first_error.log; then
     log "ERROR" "应用内核参数失败，尝试逐个验证参数..."
+
+    # 显示错误信息
+    if [[ -f /tmp/sysctl_first_error.log ]]; then
+        echo "=== 系统参数错误信息 ==="
+        cat /tmp/sysctl_first_error.log
+        echo "========================="
+    fi
+
     # 验证重要参数
-    sysctl -w net.ipv4.tcp_congestion_control=bbr 2>/dev/null || log "WARN" "BBR拥塞控制不支持，跳过"
-    sysctl -w net.core.default_qdisc=fq 2>/dev/null || log "WARN" "FQ队列不支持，跳过"
-    # 应用其他参数
-    sysctl -p /etc/sysctl.d/99-vps-optimization.conf 2>/dev/null || log "WARN" "部分参数应用失败"
+    log "INFO" "验证关键网络参数..."
+    sysctl -w net.ipv4.tcp_congestion_control=$CONGESTION_CONTROL 2>/dev/null || log "WARN" "$CONGESTION_CONTROL 拥塞控制不支持"
+    sysctl -w net.core.default_qdisc=$QDISC 2>/dev/null || log "WARN" "$QDISC 队列不支持"
+
+    # 应用其他重要参数
+    local critical_params=(
+        "vm.swappiness=10"
+        "fs.file-max=1048576"
+        "net.ipv4.ip_forward=1"
+        "kernel.pid_max=32768"
+    )
+
+    for param_set in "${critical_params[@]}"; do
+        if sysctl -w "$param_set" 2>/dev/null; then
+            log "INFO" "✓ $param_set"
+        else
+            log "WARN" "✗ $param_set (参数不支持)"
+        fi
+    done
+
+    # 尝试应用完整配置文件
+    if [[ -f /etc/sysctl.d/99-vps-optimization.conf ]]; then
+        log "INFO" "尝试应用系统优化配置..."
+        sysctl -p /etc/sysctl.d/99-vps-optimization.conf 2>/dev/null && log "SUCCESS" "系统优化配置应用成功" || log "WARN" "部分系统参数应用失败"
+    fi
+
+    # 清理临时文件
+    rm -f /tmp/sysctl_first_error.log
+else
+    log "SUCCESS" "所有内核参数应用成功"
 fi
 log "SUCCESS" "系统配置完成"
 
@@ -1066,14 +1100,44 @@ kernel.printk_devkmsg = 1
 EOF
 
 # 应用sysctl参数
-if ! sysctl --system; then
+if ! sysctl --system 2>&1 | tee /tmp/sysctl_error.log; then
     log "ERROR" "应用网络优化参数失败，尝试逐个验证..."
-    # 尝试应用配置文件
+
+    # 检查错误日志
+    if [[ -f /tmp/sysctl_error.log ]]; then
+        log "INFO" "详细错误信息已保存到 /tmp/sysctl_error.log"
+        echo "=== 错误信息 ==="
+        cat /tmp/sysctl_error.log
+        echo "=================="
+    fi
+
+    # 尝试应用配置文件，逐个验证参数
     for config_file in /etc/sysctl.d/*.conf; do
         if [[ -f "$config_file" ]]; then
-            sysctl -p "$config_file" 2>/dev/null || log "WARN" "配置文件 $config_file 部分参数应用失败"
+            log "INFO" "尝试应用配置文件: $config_file"
+            # 逐行读取并应用参数
+            while IFS= read -r line; do
+                # 跳过注释和空行
+                [[ "$line" =~ ^[[:space:]]*# ]] && continue
+                [[ -z "${line// }" ]] && continue
+
+                # 提取参数名和值
+                if [[ "$line" =~ ^([^=]+)=(.*)$ ]]; then
+                    param="${BASH_REMATCH[1]// /}"
+                    value="${BASH_REMATCH[2]// /}"
+
+                    if sysctl -w "$param=$value" 2>/dev/null; then
+                        log "INFO" "✓ $param = $value"
+                    else
+                        log "WARN" "✗ $param = $value (参数不支持或无效)"
+                    fi
+                fi
+            done < "$config_file"
         fi
     done
+
+    # 清理临时文件
+    rm -f /tmp/sysctl_error.log
 fi
 log "SUCCESS" "网络优化配置完成"
 
