@@ -8,6 +8,11 @@
 
 set -euo pipefail
 
+# 全局环境变量 - 避免交互式提示
+export DEBIAN_FRONTEND=noninteractive
+export NEEDRESTART_MODE=a
+export APT_LISTCHANGES_FRONTEND=none
+
 # 全局变量
 SCRIPT_VERSION="2.1"
 LOG_FILE="/var/log/vps_setup.log"
@@ -263,7 +268,7 @@ install_package() {
     local retry_count=0
 
     while [[ $retry_count -lt $max_retries ]]; do
-        if DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a apt-get install -yqq "$package"; then
+        if apt-get install -yqq "$package"; then
             log "SUCCESS" "$description 安装完成"
             return 0
         else
@@ -282,7 +287,7 @@ install_package() {
                 force_cleanup_apt_locks
 
                 # 最后一次尝试安装
-                if DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a apt-get install -yqq "$package"; then
+                if apt-get install -yqq "$package"; then
                     log "SUCCESS" "$description 安装完成 (强制清理后)"
                     return 0
                 else
@@ -377,6 +382,7 @@ fi
 
 # 选择 XanMod 内核类型
 echo -e "\n${WHITE}请选择要安装的 XanMod 内核类型:${NC}"
+XANMOD_KERNEL_TYPE="main"  # 默认值
 select KERNEL_TYPE in "main" "edge"; do
     [[ "$KERNEL_TYPE" =~ ^(main|edge)$ ]] && XANMOD_KERNEL_TYPE=$KERNEL_TYPE && break
     echo "无效选择，请输入 1 或 2."
@@ -405,6 +411,10 @@ echo -e "\n${WHITE}========== 配置 Telegram Bot 信息 ==========${NC}"
 read -p "是否配置 Telegram Bot 信息？(Y/n): " CONFIGURE_TELEGRAM
 CONFIGURE_TELEGRAM=${CONFIGURE_TELEGRAM:-Y}
 
+# 初始化Telegram变量
+TELEGRAM_TOKEN=""
+TELEGRAM_CHAT_ID=""
+
 if [[ "$CONFIGURE_TELEGRAM" =~ ^[Yy]$ ]]; then
     read -p "请输入 Telegram Bot 的 API Token: " TELEGRAM_TOKEN
     read -p "请输入 Telegram Chat ID： " TELEGRAM_CHAT_ID
@@ -430,6 +440,18 @@ log "INFO" "开始系统初始化..."
 # 更新系统时间
 timedatectl set-ntp true 2>/dev/null || true
 
+# 配置apt为非交互模式
+log "INFO" "配置APT为非交互模式..."
+cat > /etc/apt/apt.conf.d/99noninteractive << EOF
+APT::Get::Assume-Yes "true";
+APT::Get::AllowUnauthenticated "false";
+APT::Get::AllowReleaseInfoChange "true";
+Dpkg::Options {
+   "--force-confdef";
+   "--force-confold";
+}
+EOF
+
 # 更新软件包列表
 log "INFO" "更新软件包列表..."
 wait_for_apt_lock
@@ -438,7 +460,7 @@ apt-get update -qq || handle_error $? "软件包列表更新失败"
 # 升级已安装的软件包
 log "INFO" "升级已安装的软件包..."
 wait_for_apt_lock
-DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a apt-get upgrade -yqq || handle_error $? "系统升级失败"
+apt-get upgrade -yqq || handle_error $? "系统升级失败"
 
 # 安装基础软件包
 log "PROGRESS" "安装基础软件包..."
@@ -543,8 +565,8 @@ create_backup "/etc/iptables/rules.v6" "ip6tables规则"
 
 # 禁用并移除 ufw
 ufw disable 2>/dev/null || true
-DEBIAN_FRONTEND=noninteractive apt-get remove ufw -yqq 2>/dev/null || true
-DEBIAN_FRONTEND=noninteractive apt-get purge ufw -yqq 2>/dev/null || true
+apt-get remove ufw -yqq 2>/dev/null || true
+apt-get purge ufw -yqq 2>/dev/null || true
 
 # 安装 iptables-persistent
 install_package "iptables-persistent" "iptables持久化工具"
@@ -967,7 +989,7 @@ max_retries=2
 retry_count=0
 
 while [[ $retry_count -lt $max_retries ]]; do
-    if DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a apt-get install -yqq "$PKG"; then
+    if apt-get install -yqq "$PKG"; then
         log "SUCCESS" "XanMod 内核安装完成"
         break
     else
@@ -1122,9 +1144,11 @@ if ! sysctl --system 2>&1 | tee /tmp/sysctl_error.log; then
                 [[ -z "${line// }" ]] && continue
 
                 # 提取参数名和值
-                if [[ "$line" =~ ^([^=]+)=(.*)$ ]]; then
-                    param="${BASH_REMATCH[1]// /}"
-                    value="${BASH_REMATCH[2]// /}"
+                if [[ "$line" == *"="* ]]; then
+                    param="${line%%=*}"
+                    param="${param// /}"
+                    value="${line#*=}"
+                    value="${value// /}"
 
                     if sysctl -w "$param=$value" 2>/dev/null; then
                         log "INFO" "✓ $param = $value"
@@ -1147,8 +1171,8 @@ log "SUCCESS" "网络优化配置完成"
 log "INFO" "系统清理和优化..."
 
 # 清理不需要的包
-DEBIAN_FRONTEND=noninteractive apt-get autoremove -yqq
-DEBIAN_FRONTEND=noninteractive apt-get autoclean -yqq
+apt-get autoremove -yqq
+apt-get autoclean -yqq
 
 # 清理日志文件
 find /var/log -type f -name "*.log" -mtime +30 -delete 2>/dev/null || true
