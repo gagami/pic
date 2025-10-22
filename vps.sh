@@ -610,6 +610,17 @@ echo "* soft nofile 1048576" >> /etc/security/limits.conf
 echo "root hard nofile 1048576" >> /etc/security/limits.conf
 echo "root soft nofile 1048576" >> /etc/security/limits.conf
 
+# 检查BBR支持
+if ! modinfo tcp_bbr >/dev/null 2>&1; then
+    log "WARN" "当前内核不支持BBR拥塞控制，将使用cubic"
+    CONGESTION_CONTROL="cubic"
+    QDISC="pfifo"
+else
+    log "INFO" "检测到BBR支持，将启用BBR拥塞控制"
+    CONGESTION_CONTROL="bbr"
+    QDISC="fq"
+fi
+
 # 内核参数优化
 cat > /etc/sysctl.d/99-vps-optimization.conf << EOF
 # 网络优化
@@ -619,10 +630,8 @@ net.core.wmem_default = 262144
 net.core.wmem_max = 536870912
 net.ipv4.tcp_rmem = 4096 65536 16777216
 net.ipv4.tcp_wmem = 4096 65536 16777216
-net.ipv4.tcp_congestion_control = bbr
-net.core.default_qdisc = fq
-net.ipv4.tcp_congestion_control = bbr
-net.ipv4.tcp_congestion_control = bbr
+net.core.default_qdisc = $QDISC
+net.ipv4.tcp_congestion_control = $CONGESTION_CONTROL
 
 # 文件系统优化
 fs.file-max = 1048576
@@ -649,7 +658,14 @@ kernel.threads-max = 65535
 EOF
 
 # 应用内核参数
-sysctl --system 2>/dev/null || handle_error $? "应用内核参数失败"
+if ! sysctl --system; then
+    log "ERROR" "应用内核参数失败，尝试逐个验证参数..."
+    # 验证重要参数
+    sysctl -w net.ipv4.tcp_congestion_control=bbr 2>/dev/null || log "WARN" "BBR拥塞控制不支持，跳过"
+    sysctl -w net.core.default_qdisc=fq 2>/dev/null || log "WARN" "FQ队列不支持，跳过"
+    # 应用其他参数
+    sysctl -p /etc/sysctl.d/99-vps-optimization.conf 2>/dev/null || log "WARN" "部分参数应用失败"
+fi
 log "SUCCESS" "系统配置完成"
 
 # ==============================
@@ -949,19 +965,31 @@ log "SUCCESS" "XanMod 内核 ($PKG) 安装完成"
 # ==============================
 log "INFO" "应用网络优化配置..."
 
+# 确保拥塞控制变量已定义
+if [[ -z "$CONGESTION_CONTROL" ]]; then
+    if ! modinfo tcp_bbr >/dev/null 2>&1; then
+        CONGESTION_CONTROL="cubic"
+        QDISC="pfifo"
+        log "WARN" "使用默认拥塞控制: cubic"
+    else
+        CONGESTION_CONTROL="bbr"
+        QDISC="fq"
+        log "INFO" "使用BBR拥塞控制"
+    fi
+fi
+
 # 备份原有sysctl配置
 create_backup "/etc/sysctl.conf" "sysctl配置"
 
 # 优化网络配置
-cat << 'EOF' > /etc/sysctl.conf
+cat > /etc/sysctl.conf << EOF
 # =============================
 # 系统网络内核优化配置
 # =============================
 
 # BBR拥塞控制算法
-net.core.default_qdisc = fq
-net.ipv4.tcp_congestion_control = bbr
-net.ipv4.tcp_congestion_control = bbr
+net.core.default_qdisc = $QDISC
+net.ipv4.tcp_congestion_control = $CONGESTION_CONTROL
 
 # TCP窗口设置
 net.ipv4.tcp_window_scaling = 1
@@ -1038,7 +1066,15 @@ kernel.printk_devkmsg = 1
 EOF
 
 # 应用sysctl参数
-sysctl --system 2>/dev/null || handle_error $? "应用内核参数失败"
+if ! sysctl --system; then
+    log "ERROR" "应用网络优化参数失败，尝试逐个验证..."
+    # 尝试应用配置文件
+    for config_file in /etc/sysctl.d/*.conf; do
+        if [[ -f "$config_file" ]]; then
+            sysctl -p "$config_file" 2>/dev/null || log "WARN" "配置文件 $config_file 部分参数应用失败"
+        fi
+    done
+fi
 log "SUCCESS" "网络优化配置完成"
 
 # ==============================
