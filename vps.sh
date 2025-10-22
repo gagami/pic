@@ -140,21 +140,99 @@ check_network() {
 
 # 等待apt锁释放
 wait_for_apt_lock() {
-    local max_wait=300
+    local max_wait=600  # 增加到10分钟
     local wait_time=0
+    local lock_files=(
+        "/var/lib/dpkg/lock-frontend"
+        "/var/lib/dpkg/lock"
+        "/var/cache/apt/archives/lock"
+    )
+
+    log "INFO" "检查apt锁状态..."
+
+    # 检查是否有apt进程在运行
+    local apt_processes=$(pgrep -f "apt-get|apt|dpkg" | wc -l)
+    if [[ $apt_processes -gt 0 ]]; then
+        log "INFO" "发现 $apt_processes 个apt相关进程正在运行，等待完成..."
+    fi
+
+    for lock_file in "${lock_files[@]}"; do
+        if [[ -f "$lock_file" ]]; then
+            local lock_pid=$(fuser "$lock_file" 2>/dev/null | awk '{print $2}' | head -1)
+            if [[ -n "$lock_pid" ]]; then
+                log "INFO" "检测到apt锁: $lock_file (进程PID: $lock_pid)"
+            fi
+        fi
+    done
 
     log "INFO" "等待apt锁释放..."
-    while fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1; do
-        wait_time=$((wait_time + 5))
-        if [ $wait_time -gt $max_wait ]; then
-            log "ERROR" "apt锁等待超时"
-            return 1
+    while [[ $wait_time -lt $max_wait ]]; do
+        local all_free=true
+
+        for lock_file in "${lock_files[@]}"; do
+            if fuser "$lock_file" >/dev/null 2>&1; then
+                all_free=false
+                break
+            fi
+        done
+
+        if $all_free; then
+            log "SUCCESS" "apt锁已释放"
+            return 0
         fi
+
+        wait_time=$((wait_time + 5))
         echo -n "."
         sleep 5
     done
+
     echo
-    return 0
+    log "ERROR" "apt锁等待超时 (${max_wait}秒)"
+
+    # 显示占用进程信息
+    for lock_file in "${lock_files[@]}"; do
+        if fuser "$lock_file" >/dev/null 2>&1; then
+            local lock_pid=$(fuser "$lock_file" 2>/dev/null | awk '{print $2}' | head -1)
+            if [[ -n "$lock_pid" ]]; then
+                log "ERROR" "锁文件 $lock_file 被进程 $lock_pid 占用"
+                log "INFO" "进程详情: $(ps -p $lock_pid -o comm,cmd 2>/dev/null || echo '进程不存在')"
+            fi
+        fi
+    done
+
+    return 1
+}
+
+# 强制清理apt锁（仅作为最后手段）
+force_cleanup_apt_locks() {
+    log "WARN" "尝试强制清理apt锁..."
+
+    local lock_files=(
+        "/var/lib/dpkg/lock-frontend"
+        "/var/lib/dpkg/lock"
+        "/var/cache/apt/archives/lock"
+        "/var/lib/apt/lists/lock"
+    )
+
+    for lock_file in "${lock_files[@]}"; do
+        if [[ -f "$lock_file" ]]; then
+            local lock_pid=$(fuser "$lock_file" 2>/dev/null | awk '{print $2}' | head -1)
+            if [[ -n "$lock_pid" ]]; then
+                # 检查进程是否还在运行
+                if ps -p "$lock_pid" >/dev/null 2>&1; then
+                    log "INFO" "进程 $lock_pid 正在运行，不强制终止"
+                else
+                    log "WARN" "清理僵尸锁文件: $lock_file"
+                    rm -f "$lock_file" 2>/dev/null || true
+                fi
+            fi
+        fi
+    done
+
+    # 重启dpkg
+    dpkg --configure -a 2>/dev/null || true
+
+    log "INFO" "apt锁清理完成"
 }
 
 # 安装包的改进函数
@@ -174,8 +252,46 @@ install_package() {
         return 0
     fi
 
-    DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a apt-get install -yqq "$package" || handle_error $? "安装 $description 失败"
-    log "SUCCESS" "$description 安装完成"
+    # 等待apt锁释放
+    if ! wait_for_apt_lock; then
+        log "ERROR" "无法等待apt锁释放，跳过安装 $description"
+        return 1
+    fi
+
+    # 静默无交互安装
+    local max_retries=3
+    local retry_count=0
+
+    while [[ $retry_count -lt $max_retries ]]; do
+        if DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a apt-get install -yqq "$package"; then
+            log "SUCCESS" "$description 安装完成"
+            return 0
+        else
+            retry_count=$((retry_count + 1))
+            local exit_code=$?
+
+            if [[ $retry_count -lt $max_retries ]]; then
+                log "WARN" "$description 安装失败，尝试 $retry_count/$max_retries，等待5秒后重试..."
+                sleep 5
+
+                # 再次等待apt锁
+                wait_for_apt_lock
+            else
+                # 最后尝试：强制清理apt锁
+                log "WARN" "所有重试失败，尝试强制清理apt锁..."
+                force_cleanup_apt_locks
+
+                # 最后一次尝试安装
+                if DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a apt-get install -yqq "$package"; then
+                    log "SUCCESS" "$description 安装完成 (强制清理后)"
+                    return 0
+                else
+                    handle_error $exit_code "安装 $description 失败 (已重试 $max_retries 次并强制清理)"
+                    return $exit_code
+                fi
+            fi
+        fi
+    done
 }
 
 # 检查系统资源
@@ -789,7 +905,35 @@ fi
 
 # 安装内核
 log "INFO" "安装 XanMod 内核: $PKG"
-DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a apt-get install -yqq "$PKG" || handle_error $? "安装 XanMod 内核失败"
+
+# 等待apt锁释放
+if ! wait_for_apt_lock; then
+    log "ERROR" "无法等待apt锁释放，无法安装内核"
+    exit 1
+fi
+
+# 尝试安装内核，带重试机制
+local max_retries=2
+local retry_count=0
+
+while [[ $retry_count -lt $max_retries ]]; do
+    if DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a apt-get install -yqq "$PKG"; then
+        log "SUCCESS" "XanMod 内核安装完成"
+        break
+    else
+        retry_count=$((retry_count + 1))
+        local exit_code=$?
+
+        if [[ $retry_count -lt $max_retries ]]; then
+            log "WARN" "内核安装失败，尝试 $retry_count/$max_retries，等待10秒后重试..."
+            sleep 10
+            wait_for_apt_lock
+        else
+            handle_error $exit_code "安装 XanMod 内核失败"
+            exit $exit_code
+        fi
+    fi
+done
 
 # 更新GRUB
 if command -v update-grub >/dev/null 2>&1; then
