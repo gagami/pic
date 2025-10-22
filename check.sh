@@ -19,13 +19,17 @@ FIX_AVAILABLE=0
 
 # 系统检测
 detect_system() {
+    # 初始化变量
+    DISTRO="unknown"
+    DISTRO_VERSION="unknown"
+    ID=""
+    VERSION_ID=""
+
     if [[ -f /etc/os-release ]]; then
-        . /etc/os-release
-        DISTRO=$ID
-        DISTRO_VERSION=$VERSION_ID
-    else
-        DISTRO="unknown"
-        DISTRO_VERSION="unknown"
+        # 安全加载os-release文件
+        source /etc/os-release || true
+        DISTRO=${ID:-"unknown"}
+        DISTRO_VERSION=${VERSION_ID:-"unknown"}
     fi
 
     log "INFO" "检测到系统: $DISTRO $DISTRO_VERSION"
@@ -132,6 +136,7 @@ check_permissions() {
     if [[ $EUID -ne 0 ]]; then
         log "WARN" "建议以root权限运行以获得完整检查结果"
         read -p "是否继续？(y/N): " CONTINUE
+        CONTINUE=${CONTINUE:-N}
         if [[ ! "$CONTINUE" =~ ^[Yy]$ ]]; then
             exit 1
         fi
@@ -342,22 +347,83 @@ check_kernel() {
     else
         log "WARN" "内核版本较旧，建议升级"
     fi
+
+    # 检查BBR支持状态
+    local bbr_loaded=$(lsmod | grep -q "tcp_bbr" && echo "true" || echo "false")
+    local congestion_control=$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null || echo "unknown")
+    local qdisc=$(sysctl -n net.core.default_qdisc 2>/dev/null || echo "unknown")
+
+    echo "  拥塞控制算法: $congestion_control"
+    echo "  队列调度算法: $qdisc"
+
+    if [[ "$congestion_control" == "bbr" ]]; then
+        if $bbr_loaded; then
+            log "SUCCESS" "BBR 拥塞控制已启用"
+        else
+            log "WARN" "BBR 已配置但模块未加载"
+        fi
+    elif [[ "$congestion_control" == "cubic" ]]; then
+        if ! modinfo tcp_bbr >/dev/null 2>&1; then
+            log "INFO" "当前内核不支持 BBR，使用 cubic 算法"
+        else
+            log "WARN" "BBR 可用但未启用，当前使用 cubic"
+            log "FIX" "可运行: sysctl -w net.ipv4.tcp_congestion_control=bbr"
+        fi
+    else
+        log "WARN" "未知的拥塞控制算法: $congestion_control"
+    fi
+}
+
+check_bbr_support() {
+    log "INFO" "检查BBR拥塞控制支持..."
+
+    # 检查内核是否支持BBR
+    if modinfo tcp_bbr >/dev/null 2>&1; then
+        echo "  $OK 内核支持 BBR 模块"
+
+        # 检查模块是否已加载
+        if lsmod | grep -q "tcp_bbr"; then
+            echo "  $OK BBR 模块已加载"
+        else
+            echo "  $INFO BBR 模块未加载"
+            log "FIX" "可运行: modprobe tcp_bbr"
+        fi
+
+        # 检查配置文件中的设置
+        local sysctl_bbr=$(grep -h "net.ipv4.tcp_congestion_control.*=.*bbr" /etc/sysctl.d/*.conf 2>/dev/null | head -n1 || echo "")
+        if [[ -n "$sysctl_bbr" ]]; then
+            echo "  $OK 配置文件中已设置 BBR"
+        else
+            echo "  $WARN 配置文件未设置 BBR"
+        fi
+    else
+        echo "  $WARN 内核不支持 BBR"
+        log "INFO" "建议安装支持 BBR 的内核 (如 XanMod)"
+    fi
 }
 
 check_sysctl() {
     log "INFO" "检查系统内核参数..."
 
     declare -A expected=(
-        ["net.ipv4.tcp_timestamps"]="1"
-        ["net.core.wmem_default"]="16384"
         ["net.core.rmem_default"]="262144"
+        ["net.core.rmem_max"]="536870912"
+        ["net.core.wmem_default"]="262144"
+        ["net.core.wmem_max"]="536870912"
+        ["net.ipv4.tcp_rmem"]="4096 65536 16777216"
+        ["net.ipv4.tcp_wmem"]="4096 65536 16777216"
         ["net.ipv4.tcp_window_scaling"]="1"
-        ["net.ipv4.tcp_tw_reuse"]="1"
-        ["net.ipv4.tcp_max_tw_buckets"]="55000"
+        ["net.ipv4.tcp_fin_timeout"]="15"
+        ["net.ipv4.tcp_keepalive_time"]="1200"
         ["vm.swappiness"]="10"
-        ["fs.file-max"]="1048575"
+        ["vm.vfs_cache_pressure"]="50"
+        ["vm.dirty_ratio"]="15"
+        ["vm.dirty_background_ratio"]="5"
+        ["fs.file-max"]="1048576"
+        ["fs.inotify.max_user_watches"]="524288"
         ["net.ipv4.ip_forward"]="1"
-        ["net.ipv6.conf.all.disable_ipv6"]="0"
+        ["kernel.pid_max"]="32768"
+        ["kernel.threads-max"]="65535"
     )
 
     local optimized_count=0
@@ -745,6 +811,7 @@ interactive_fix() {
     echo
     log "INFO" "发现 $FIX_AVAILABLE 个可优化项目"
     read -p "是否查看修复建议？(y/N): " SHOW_FIXES
+    SHOW_FIXES=${SHOW_FIXES:-N}
 
     if [[ "$SHOW_FIXES" =~ ^[Yy]$ ]]; then
         echo -e "\n${PURPLE}=== 修复建议 ===${NC}"
@@ -757,6 +824,7 @@ interactive_fix() {
         echo "7. 清理磁盘空间: apt-get clean && journalctl --vacuum-time=7d"
 
         read -p "是否自动执行基本优化？(y/N): " AUTO_FIX
+        AUTO_FIX=${AUTO_FIX:-N}
         if [[ "$AUTO_FIX" =~ ^[Yy]$ ]]; then
             auto_fix_system
         fi
@@ -778,8 +846,22 @@ auto_fix_system() {
 # Auto optimization by VPS check script
 vm.swappiness=10
 net.ipv4.tcp_tw_reuse=1
-fs.file-max=1048575
+fs.file-max=1048576
+net.ipv4.tcp_keepalive_time=1200
+net.ipv4.tcp_fin_timeout=15
 EOF
+
+    # 尝试配置BBR（如果支持）
+    if modinfo tcp_bbr >/dev/null 2>&1; then
+        log "INFO" "配置BBR拥塞控制..."
+        cat << EOF >> /etc/sysctl.conf 2>/dev/null || true
+# BBR optimization
+net.core.default_qdisc=fq
+net.ipv4.tcp_congestion_control=bbr
+EOF
+        # 尝试加载BBR模块
+        modprobe tcp_bbr 2>/dev/null || log "WARN" "BBR模块加载失败"
+    fi
 
     # 重新加载sysctl
     sysctl -p >/dev/null 2>&1 || log "WARN" "sysctl配置重载失败"
@@ -821,6 +903,7 @@ main() {
 
     # 内核与参数检查
     check_kernel
+    check_bbr_support
     check_sysctl
     check_limits
     echo
