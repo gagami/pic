@@ -188,7 +188,6 @@ TARGETS=(
     "223.5.5.5:53"      # AliDNS
     "119.29.29.29:53"   # TencentDNS (DNSPod)
     "baidu.com:80"      # Baidu Web
-    "qq.com:80"         # Tencent Web
     "163.com:80"        # Netease Web
 )
 
@@ -439,7 +438,7 @@ echo "• 防重复通知机制"
 echo
 
 echo -e "${CYAN}⚙️ 配置检测:${NC}"
-echo "• 检测目标: 5个中国服务器"
+echo "• 检测目标: 4个中国服务器"
 echo "• 屏蔽阈值: 90% 失败率"
 echo "• 超时设置: 3秒连接超时"
 echo
