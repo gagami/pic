@@ -923,10 +923,12 @@ log "INFO" "  ABI: $ABI"
 # 根据类型选择包
 case "$ABI" in
     x86-64-v4)
+        # v4包不存在，降级使用v3包
+        log "WARN" "x86-64-v4 包不存在，降级使用 x86-64-v3 包"
         if [[ "$XANMOD_KERNEL_TYPE" == "edge" ]]; then
-            PKG="linux-xanmod-edge-x64v4"
+            PKG="linux-xanmod-edge-x64v3"
         else
-            PKG="linux-xanmod-main-x64v4"
+            PKG="linux-xanmod-main-x64v3"
         fi
         ;;
     x86-64-v2)
