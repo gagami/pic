@@ -2,7 +2,7 @@
 
 #=======================================================
 # 自动安装 GFW 出站检测脚本并设置 Cron 任务
-# (V2 - 已修改为“仅屏蔽时通知，恢复时不通知”)
+# (V3 - 屏蔽时重复通知，恢复时通知一次)
 #=======================================================
 
 # --- 变量定义 ---
@@ -142,8 +142,9 @@ cat << 'EOF' > $SCRIPT_PATH
 #!/bin/bash
 
 #=======================================================
-# GFW 屏蔽检测与 Telegram 通知脚本 (V4.0)
+# GFW 屏蔽检测与 Telegram 通知脚本 (V5.0)
 # 兼容 vps.sh Telegram 配置格式
+# 屏蔽时重复通知，恢复时通知一次
 #=======================================================
 
 # 颜色定义 (用于日志输出)
@@ -348,12 +349,11 @@ log "INFO" "检测完成: $SUCCESS_COUNT/$TOTAL_TARGETS 成功 (失败率: $FAIL
 if [ "$FAILURE_RATE" -ge "$FAIL_THRESHOLD" ]; then
     # 判定为被墙
 
-    # 检查状态文件，如果文件不存在，说明是首次检测到屏蔽
-    if [ ! -f "$STATUS_FILE" ]; then
-        log "WARN" "首次检测到 GFW 屏蔽，发送通知..."
+    # 每次检测到屏蔽都发送通知
+    log "WARN" "检测到 GFW 屏蔽，发送通知..."
 
-        # 构建详细的通知消息
-        MSG="🚨 <b>GFW 屏蔽警告</b> 🚨
+    # 构建详细的通知消息
+    MSG="🚨 <b>GFW 屏蔽警告</b> 🚨
 
 📊 <b>服务器信息:</b>
 • 主机名: $HOSTNAME
@@ -378,18 +378,15 @@ GFW 通常执行双向封锁，这意味着中国大陆用户也可能无法访�
 2. 联系服务提供商
 3. 考虑更换IP或服务器"
 
-        if send_tg_notification "$MSG"; then
-            log "SUCCESS" "GFW屏蔽通知已发送"
-        else
-            log "ERROR" "GFW屏蔽通知发送失败"
-        fi
-
-        # 创建状态文件，防止重复通知
-        touch "$STATUS_FILE"
-        log "INFO" "已创建状态标记，24小时内不再重复通知"
+    if send_tg_notification "$MSG"; then
+        log "SUCCESS" "GFW屏蔽通知已发送"
     else
-        log "INFO" "已处于屏蔽状态，本次不重复通知"
+        log "ERROR" "GFW屏蔽通知发送失败"
     fi
+
+    # 创建状态文件，用于标记当前处于屏蔽状态
+    touch "$STATUS_FILE"
+    log "INFO" "已创建状态标记"
 else
     # 判定为正常
 
@@ -397,25 +394,29 @@ else
     if [ -f "$STATUS_FILE" ]; then
         log "INFO" "从 GFW 屏蔽状态恢复"
 
-        # 可选：发送恢复通知（注释掉以符合"仅屏蔽时通知"的要求）
-        # RECOVERY_MSG="✅ <b>GFW 屏蔽已解除</b>
-        #
-        # 📊 <b>服务器信息:</b>
-        # • 主机名: $HOSTNAME
-        # • IP 地址: <code>$MY_IP</code>
-        # • 地区: $LOCATION
-        #
-        # ✅ <b>状态更新:</b>
-        # • 检测方向: VPS → 中国大陆
-        # • 成功连接: $SUCCESS_COUNT/$TOTAL_TARGETS
-        # • 失败率: $FAILURE_RATE%
-        #
-        # 🎉 <b>好消息:</b>
-        # 您的服务器出站访问中国大陆已恢复正常！
-        #
-        # 📅 <b>恢复时间:</b> $(date '+%Y-%m-%d %H:%M:%S')"
-        #
-        # send_tg_notification "$RECOVERY_MSG"
+        # 发送恢复通知
+        RECOVERY_MSG="✅ <b>GFW 屏蔽已解除</b>
+
+📊 <b>服务器信息:</b>
+• 主机名: $HOSTNAME
+• IP 地址: <code>$MY_IP</code>
+• 地区: $LOCATION
+
+✅ <b>状态更新:</b>
+• 检测方向: VPS → 中国大陆
+• 成功连接: $SUCCESS_COUNT/$TOTAL_TARGETS
+• 失败率: $FAILURE_RATE%
+
+🎉 <b>好消息:</b>
+您的服务器出站访问中国大陆已恢复正常！
+
+📅 <b>恢复时间:</b> $(date '+%Y-%m-%d %H:%M:%S')"
+
+        if send_tg_notification "$RECOVERY_MSG"; then
+            log "SUCCESS" "GFW恢复通知已发送"
+        else
+            log "ERROR" "GFW恢复通知发送失败"
+        fi
 
         # 删除状态文件，为下次屏蔽做准备
         rm -f "$STATUS_FILE"
@@ -485,10 +486,10 @@ echo
 
 echo -e "${CYAN}🔧 脚本功能:${NC}"
 echo "• 检测 VPS → 中国大陆的出站连通性"
-echo "• 仅在检测到 GFW 屏蔽时发送通知"
+echo "• 屏蔽时重复通知，恢复时通知一次"
 echo "• 支持详细的 HTML 格式通知"
 echo "• 自动获取服务器 IP 和位置信息"
-echo "• 防重复通知机制"
+echo "• 智能状态跟踪机制"
 echo
 
 echo -e "${CYAN}⚙️ 配置检测:${NC}"
