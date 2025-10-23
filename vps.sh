@@ -1033,7 +1033,7 @@ fi
 
 # 验证keyring文件
 if [[ -f /usr/share/keyrings/xanmod-archive-keyring.gpg ]]; then
-    local keyring_size=$(stat -c%s /usr/share/keyrings/xanmod-archive-keyring.gpg 2>/dev/null || echo "0")
+    keyring_size=$(stat -c%s /usr/share/keyrings/xanmod-archive-keyring.gpg 2>/dev/null || echo "0")
     if [[ $keyring_size -gt 0 ]]; then
         log "INFO" "GPG keyring 文件已创建 (大小: $keyring_size 字节)"
     else
