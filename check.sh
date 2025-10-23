@@ -405,31 +405,81 @@ check_bbr_support() {
 check_sysctl() {
     log "INFO" "检查系统内核参数..."
 
-    declare -A expected=(
-        ["net.core.rmem_default"]="262144"
-        ["net.core.rmem_max"]="536870912"
-        ["net.core.wmem_default"]="262144"
-        ["net.core.wmem_max"]="536870912"
-        ["net.ipv4.tcp_rmem"]="4096 65536 16777216"
-        ["net.ipv4.tcp_wmem"]="4096 65536 16777216"
-        ["net.ipv4.tcp_window_scaling"]="1"
-        ["net.ipv4.tcp_fin_timeout"]="15"
-        ["net.ipv4.tcp_keepalive_time"]="1200"
-        ["vm.swappiness"]="10"
-        ["vm.vfs_cache_pressure"]="50"
-        ["vm.dirty_ratio"]="15"
-        ["vm.dirty_background_ratio"]="5"
-        ["fs.file-max"]="1048576"
-        ["fs.inotify.max_user_watches"]="524288"
-        ["net.ipv4.ip_forward"]="1"
-        ["kernel.pid_max"]="32768"
-        ["kernel.threads-max"]="65535"
-    )
+    # 根据系统类型设置不同的期望值
+    declare -A expected
+    local system_type=""
+
+    case "$DISTRO" in
+        "debian")
+            system_type="Debian 12"
+            # Debian 12 兼容的期望值
+            expected=(
+                ["vm.swappiness"]="10"
+                ["fs.file-max"]="1048576"
+                ["net.ipv4.ip_forward"]="1"
+                ["kernel.pid_max"]="32768"
+                ["kernel.threads-max"]="65535"
+                ["vm.vfs_cache_pressure"]="50"
+                ["vm.dirty_ratio"]="15"
+                ["vm.dirty_background_ratio"]="5"
+                ["fs.inotify.max_user_watches"]="524288"
+                # Debian 12 网络参数（保守值）
+                ["net.ipv4.tcp_window_scaling"]="1"
+                ["net.ipv4.tcp_fin_timeout"]="30"
+                ["net.ipv4.tcp_keepalive_time"]="7200"
+                ["net.ipv4.tcp_max_syn_backlog"]="4096"
+                ["net.core.netdev_max_backlog"]="5000"
+            )
+            ;;
+        "ubuntu")
+            system_type="Ubuntu 22.04"
+            # Ubuntu 22.04 的期望值（更激进）
+            expected=(
+                ["net.core.rmem_default"]="262144"
+                ["net.core.rmem_max"]="536870912"
+                ["net.core.wmem_default"]="262144"
+                ["net.core.wmem_max"]="536870912"
+                ["net.ipv4.tcp_rmem"]="4096 65536 16777216"
+                ["net.ipv4.tcp_wmem"]="4096 65536 16777216"
+                ["net.ipv4.tcp_window_scaling"]="1"
+                ["net.ipv4.tcp_fin_timeout"]="15"
+                ["net.ipv4.tcp_keepalive_time"]="1200"
+                ["vm.swappiness"]="10"
+                ["vm.vfs_cache_pressure"]="50"
+                ["vm.dirty_ratio"]="15"
+                ["vm.dirty_background_ratio"]="5"
+                ["fs.file-max"]="1048576"
+                ["fs.inotify.max_user_watches"]="524288"
+                ["net.ipv4.ip_forward"]="1"
+                ["kernel.pid_max"]="32768"
+                ["kernel.threads-max"]="999999"
+                # Ubuntu 高级网络参数
+                ["net.ipv4.tcp_fastopen"]="3"
+                ["net.ipv4.tcp_slow_start_after_idle"]="1"
+                ["net.ipv4.tcp_no_metrics_save"]="1"
+                ["net.ipv4.tcp_mtu_probing"]="1"
+            )
+            ;;
+        *)
+            system_type="未知系统"
+            # 通用保守设置
+            expected=(
+                ["vm.swappiness"]="10"
+                ["fs.file-max"]="1048576"
+                ["net.ipv4.ip_forward"]="1"
+                ["kernel.pid_max"]="32768"
+                ["vm.vfs_cache_pressure"]="50"
+                ["vm.dirty_ratio"]="15"
+                ["vm.dirty_background_ratio"]="5"
+                ["fs.inotify.max_user_watches"]="524288"
+            )
+            ;;
+    esac
 
     local optimized_count=0
     local total_params=${#expected[@]}
 
-    echo -e "${WHITE}内核参数检查:${NC}"
+    echo -e "${WHITE}内核参数检查 ($system_type 标准):${NC}"
 
     for param in "${!expected[@]}"; do
         local expected_value=${expected[$param]}
@@ -438,6 +488,8 @@ check_sysctl() {
         if [[ "$current_value" == "$expected_value" ]]; then
             echo "  $OK $param = $current_value"
             ((optimized_count++))
+        elif [[ "$current_value" == "未设置" ]]; then
+            echo "  $WARNING $param = $current_value (参数不支持)"
         else
             echo "  $WARNING $param = $current_value (期望: $expected_value)"
         fi
@@ -447,8 +499,106 @@ check_sysctl() {
     local optimization_rate=$((optimized_count * 100 / total_params))
     log "INFO" "内核参数优化率: $optimized_count/$total_params ($optimization_rate%)"
 
-    if [[ $optimization_rate -lt 80 ]]; then
+    # 根据系统类型调整阈值
+    local threshold=80
+    if [[ "$DISTRO" == "debian" ]]; then
+        threshold=70  # Debian 12 使用更宽松的阈值
+    fi
+
+    if [[ $optimization_rate -lt $threshold ]]; then
         log "WARN" "建议优化内核参数以提升系统性能"
+        if [[ "$DISTRO" == "debian" ]]; then
+            log "INFO" "Debian 12 建议使用保守的网络参数设置"
+        fi
+    else
+        log "SUCCESS" "内核参数配置良好"
+    fi
+}
+
+check_network_compatibility() {
+    log "INFO" "检查网络参数兼容性..."
+
+    echo -e "${WHITE}网络参数兼容性检查:${NC}"
+
+    # 检查关键网络参数是否支持
+    local network_params=(
+        "net.ipv4.tcp_congestion_control"
+        "net.core.default_qdisc"
+        "net.ipv4.tcp_window_scaling"
+        "net.ipv4.tcp_fin_timeout"
+        "net.ipv4.tcp_keepalive_time"
+        "net.ipv4.tcp_max_syn_backlog"
+        "net.core.netdev_max_backlog"
+    )
+
+    local supported_count=0
+    local total_count=${#network_params[@]}
+
+    for param in "${network_params[@]}"; do
+        local current_value=$(sysctl -n "$param" 2>/dev/null || echo "不支持")
+        if [[ "$current_value" != "不支持" ]]; then
+            echo "  $OK $param = $current_value"
+            ((supported_count++))
+        else
+            echo "  $WARNING $param = $current_value"
+        fi
+    done
+
+    echo
+    local support_rate=$((supported_count * 100 / total_count))
+    log "INFO" "网络参数支持率: $supported_count/$total_count ($support_rate%)"
+
+    # 检查高级网络参数（Ubuntu特有）
+    if [[ "$DISTRO" == "ubuntu" ]]; then
+        echo -e "${WHITE}高级网络参数检查 (Ubuntu):${NC}"
+        local advanced_params=(
+            "net.ipv4.tcp_fastopen"
+            "net.ipv4.tcp_slow_start_after_idle"
+            "net.ipv4.tcp_no_metrics_save"
+            "net.ipv4.tcp_mtu_probing"
+        )
+
+        local advanced_supported=0
+        for param in "${advanced_params[@]}"; do
+            local current_value=$(sysctl -n "$param" 2>/dev/null || echo "不支持")
+            if [[ "$current_value" != "不支持" ]]; then
+                echo "  $OK $param = $current_value"
+                ((advanced_supported++))
+            else
+                echo "  $WARNING $param = $current_value"
+            fi
+        done
+
+        echo
+        log "INFO" "高级参数支持: $advanced_supported/${#advanced_params[@]}"
+    fi
+
+    # Debian 12 特定建议
+    if [[ "$DISTRO" == "debian" ]]; then
+        echo -e "${WHITE}Debian 12 优化建议:${NC}"
+
+        # 检查是否使用了保守的网络参数
+        local fin_timeout=$(sysctl -n net.ipv4.tcp_fin_timeout 2>/dev/null || echo "0")
+        local keepalive_time=$(sysctl -n net.ipv4.tcp_keepalive_time 2>/dev/null || echo "0")
+        local syn_backlog=$(sysctl -n net.ipv4.tcp_max_syn_backlog 2>/dev/null || echo "0")
+
+        if [[ $fin_timeout -ge 30 ]]; then
+            echo "  $OK TCP FIN 超时设置合理: ${fin_timeout}s"
+        else
+            echo "  $WARNING TCP FIN 超时可能过短: ${fin_timeout}s (建议 >=30s)"
+        fi
+
+        if [[ $keepalive_time -ge 3600 ]]; then
+            echo "  $OK TCP Keepalive 时间合理: ${keepalive_time}s"
+        else
+            echo "  $WARNING TCP Keepalive 时间可能过短: ${keepalive_time}s (建议 >=3600s)"
+        fi
+
+        if [[ $syn_backlog -le 8192 ]]; then
+            echo "  $OK SYN 队列大小适中: $syn_backlog"
+        else
+            echo "  $WARNING SYN 队列可能过大: $syn_backlog (Debian 12 建议 <=8192)"
+        fi
     fi
 }
 
@@ -817,11 +967,26 @@ interactive_fix() {
         echo -e "\n${PURPLE}=== 修复建议 ===${NC}"
         echo "1. 更新系统包: apt-get update && apt-get upgrade -y"
         echo "2. 安装缺失软件包: apt-get install wget curl git htop -y"
-        echo "3. 优化内核参数: echo 'vm.swappiness=10' >> /etc/sysctl.conf"
+
+        if [[ "$DISTRO" == "debian" ]]; then
+            echo "3. Debian 12 优化内核参数:"
+            echo "   - sysctl -w vm.swappiness=10"
+            echo "   - sysctl -w net.ipv4.tcp_fin_timeout=30"
+            echo "   - sysctl -w net.ipv4.tcp_keepalive_time=7200"
+            echo "   - sysctl -w net.ipv4.tcp_max_syn_backlog=4096"
+        else
+            echo "3. Ubuntu 22.04 优化内核参数:"
+            echo "   - sysctl -w vm.swappiness=10"
+            echo "   - sysctl -w net.ipv4.tcp_fin_timeout=15"
+            echo "   - sysctl -w net.ipv4.tcp_keepalive_time=1200"
+            echo "   - sysctl -w net.ipv4.tcp_fastopen=3"
+        fi
+
         echo "4. 配置文件描述符限制: 编辑 /etc/security/limits.conf"
         echo "5. 配置防火墙规则: iptables -A INPUT -p tcp --dport 22 -j ACCEPT"
         echo "6. 修改SSH配置: 编辑 /etc/ssh/sshd_config"
         echo "7. 清理磁盘空间: apt-get clean && journalctl --vacuum-time=7d"
+        echo "8. 运行磁盘清理脚本: bash cleanup_disk.sh"
 
         read -p "是否自动执行基本优化？(y/N): " AUTO_FIX
         AUTO_FIX=${AUTO_FIX:-N}
@@ -840,33 +1005,84 @@ auto_fix_system() {
         apt-get update >/dev/null 2>&1 || log "WARN" "更新失败"
     fi
 
-    # 优化sysctl参数
-    log "INFO" "优化内核参数..."
-    cat << EOF >> /etc/sysctl.conf 2>/dev/null || true
-# Auto optimization by VPS check script
-vm.swappiness=10
-net.ipv4.tcp_tw_reuse=1
-fs.file-max=1048576
-net.ipv4.tcp_keepalive_time=1200
-net.ipv4.tcp_fin_timeout=15
-EOF
-
-    # 尝试配置BBR（如果支持）
-    if modinfo tcp_bbr >/dev/null 2>&1; then
-        log "INFO" "配置BBR拥塞控制..."
-        cat << EOF >> /etc/sysctl.conf 2>/dev/null || true
-# BBR optimization
-net.core.default_qdisc=fq
-net.ipv4.tcp_congestion_control=bbr
-EOF
-        # 尝试加载BBR模块
-        modprobe tcp_bbr 2>/dev/null || log "WARN" "BBR模块加载失败"
+    # 根据系统类型应用不同的优化策略
+    if [[ "$DISTRO" == "debian" ]]; then
+        log "INFO" "应用Debian 12兼容优化..."
+        auto_fix_debian
+    else
+        log "INFO" "应用Ubuntu 22.04优化..."
+        auto_fix_ubuntu
     fi
 
     # 重新加载sysctl
     sysctl -p >/dev/null 2>&1 || log "WARN" "sysctl配置重载失败"
 
     log "SUCCESS" "基本优化完成"
+}
+
+# Debian 12 特定的自动修复
+auto_fix_debian() {
+    cat << EOF >> /etc/sysctl.conf 2>/dev/null || true
+# Auto optimization for Debian 12 by VPS check script
+vm.swappiness=10
+fs.file-max=1048576
+net.ipv4.ip_forward=1
+kernel.pid_max=32768
+kernel.threads-max=65535
+vm.vfs_cache_pressure=50
+vm.dirty_ratio=15
+vm.dirty_background_ratio=5
+fs.inotify.max_user_watches=524288
+
+# Debian 12 网络优化 (保守设置)
+net.ipv4.tcp_window_scaling=1
+net.ipv4.tcp_fin_timeout=30
+net.ipv4.tcp_keepalive_time=7200
+net.ipv4.tcp_max_syn_backlog=4096
+net.core.netdev_max_backlog=5000
+EOF
+
+    # 尝试配置BBR（如果支持）
+    if modinfo tcp_bbr >/dev/null 2>&1; then
+        log "INFO" "配置BBR拥塞控制..."
+        cat << EOF >> /etc/sysctl.conf 2>/dev/null || true
+# BBR optimization for Debian 12
+net.core.default_qdisc=fq
+net.ipv4.tcp_congestion_control=bbr
+EOF
+        modprobe tcp_bbr 2>/dev/null || log "WARN" "BBR模块加载失败"
+    else
+        log "INFO" "BBR不支持，跳过配置"
+    fi
+}
+
+# Ubuntu 22.04 特定的自动修复
+auto_fix_ubuntu() {
+    cat << EOF >> /etc/sysctl.conf 2>/dev/null || true
+# Auto optimization for Ubuntu 22.04 by VPS check script
+vm.swappiness=10
+net.ipv4.tcp_tw_reuse=1
+fs.file-max=1048576
+net.ipv4.tcp_keepalive_time=1200
+net.ipv4.tcp_fin_timeout=15
+
+# Ubuntu 高级网络优化
+net.ipv4.tcp_fastopen=3
+net.ipv4.tcp_slow_start_after_idle=1
+net.ipv4.tcp_no_metrics_save=1
+net.ipv4.tcp_mtu_probing=1
+EOF
+
+    # 尝试配置BBR（如果支持）
+    if modinfo tcp_bbr >/dev/null 2>&1; then
+        log "INFO" "配置BBR拥塞控制..."
+        cat << EOF >> /etc/sysctl.conf 2>/dev/null || true
+# BBR optimization for Ubuntu 22.04
+net.core.default_qdisc=fq
+net.ipv4.tcp_congestion_control=bbr
+EOF
+        modprobe tcp_bbr 2>/dev/null || log "WARN" "BBR模块加载失败"
+    fi
 }
 
 # ==============================
@@ -905,6 +1121,7 @@ main() {
     check_kernel
     check_bbr_support
     check_sysctl
+    check_network_compatibility
     check_limits
     echo
 
