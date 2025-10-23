@@ -256,7 +256,7 @@ get_system_info() {
     fi
 
     # 方法4: 使用 ip.sb (IPv4专用)
-    if [z "$ip" ]; then
+    if [ -z "$ip" ]; then
         ip=$(curl -s --connect-timeout 10 "https://api.ip.sb/ip" 2>/dev/null || echo "")
     fi
 
