@@ -235,8 +235,62 @@ send_tg_notification() {
 # --- (6) 系统信息获取函数 ---
 get_system_info() {
     local hostname=$(hostname)
-    local ip=$(curl -s --connect-timeout 5 ifconfig.me 2>/dev/null || echo "未知")
-    local location=$(curl -s --connect-timeout 5 "http://ip-api.com/json/$ip" 2>/dev/null | jq -r '.country // "未知"' 2>/dev/null || echo "未知")
+
+    # 获取IPv4地址（使用多个备用服务）
+    local ip=""
+
+    # 方法1: 使用 ifconfig.me (支持IPv4)
+    if [ -z "$ip" ]; then
+        ip=$(curl -s --connect-timeout 10 -4 "https://ifconfig.me" 2>/dev/null || echo "")
+    fi
+
+    # 方法2: 使用 ipinfo.io (IPv4专用)
+    if [ -z "$ip" ]; then
+        ip=$(curl -s --connect-timeout 10 "https://ipinfo.io/ip" 2>/dev/null || echo "")
+    fi
+
+    # 方法3: 使用 icanhazip.com (IPv4专用)
+    if [ -z "$ip" ]; then
+        ip=$(curl -s --connect-timeout 10 "https://ipv4.icanhazip.com" 2>/dev/null || echo "")
+    fi
+
+    # 方法4: 使用 ip.sb (IPv4专用)
+    if [z "$ip" ]; then
+        ip=$(curl -s --connect-timeout 10 "https://api.ip.sb/ip" 2>/dev/null || echo "")
+    fi
+
+    # 方法5: 使用本地命令作为最后手段
+    if [ -z "$ip" ]; then
+        # 尝试从多个网络接口获取IPv4
+        for interface in $(ip -4 addr show 2>/dev/null | grep 'inet ' | awk '{print $2}' | cut -d'/' -f1 | grep -v '^127\.'); do
+            if [[ "$interface" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+                ip="$interface"
+                break
+            fi
+        done
+    fi
+
+    # 如果仍然没有获取到IP，使用默认值
+    if [ -z "$ip" ]; then
+        ip="未知"
+    fi
+
+    # 验证IP地址格式
+    if [[ "$ip" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+        log "INFO" "检测到IPv4地址: $ip"
+    else
+        log "WARN" "未能获取有效的IPv4地址: $ip"
+        ip="未知"
+    fi
+
+    # 获取地理位置信息
+    local location="未知"
+    if [[ "$ip" != "未知" ]]; then
+        location=$(curl -s --connect-timeout 10 "http://ip-api.com/json/$ip" 2>/dev/null | jq -r '.country // "未知"' 2>/dev/null || echo "未知")
+        if [[ "$location" != "未知" ]]; then
+            log "INFO" "检测到地理位置: $location"
+        fi
+    fi
 
     echo "$hostname|$ip|$location"
 }
