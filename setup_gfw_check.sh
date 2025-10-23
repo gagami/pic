@@ -2,7 +2,8 @@
 
 #=======================================================
 # 自动安装 GFW 出站检测脚本并设置 Cron 任务
-# (V3 - 屏蔽时重复通知，恢复时通知一次)
+# (V3.1 - 修复通知格式问题)
+# 屏蔽时重复通知，恢复时通知一次
 #=======================================================
 
 # --- 变量定义 ---
@@ -142,9 +143,10 @@ cat << 'EOF' > $SCRIPT_PATH
 #!/bin/bash
 
 #=======================================================
-# GFW 屏蔽检测与 Telegram 通知脚本 (V5.0)
+# GFW 屏蔽检测与 Telegram 通知脚本 (V5.1)
 # 兼容 vps.sh Telegram 配置格式
 # 屏蔽时重复通知，恢复时通知一次
+# 修复通知内容格式问题
 #=======================================================
 
 # 颜色定义 (用于日志输出)
@@ -278,7 +280,8 @@ get_system_info() {
 
     # 验证IP地址格式
     if [[ "$ip" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-        log "INFO" "检测到IPv4地址: $ip"
+        # 静默验证，不输出日志避免污染通知内容
+        :
     else
         log "WARN" "未能获取有效的IPv4地址: $ip"
         ip="未知"
@@ -288,9 +291,7 @@ get_system_info() {
     local location="未知"
     if [[ "$ip" != "未知" ]]; then
         location=$(curl -s --connect-timeout 10 "http://ip-api.com/json/$ip" 2>/dev/null | jq -r '.country // "未知"' 2>/dev/null || echo "未知")
-        if [[ "$location" != "未知" ]]; then
-            log "INFO" "检测到地理位置: $location"
-        fi
+        # 静默获取位置信息，避免污染通知内容
     fi
 
     echo "$hostname|$ip|$location"
@@ -310,6 +311,12 @@ SYSTEM_INFO=$(get_system_info)
 HOSTNAME=$(echo "$SYSTEM_INFO" | cut -d'|' -f1)
 MY_IP=$(echo "$SYSTEM_INFO" | cut -d'|' -f2)
 LOCATION=$(echo "$SYSTEM_INFO" | cut -d'|' -f3)
+
+# 输出系统信息日志
+log "INFO" "检测到IPv4地址: $MY_IP"
+if [[ "$LOCATION" != "未知" ]]; then
+    log "INFO" "检测到地理位置: $LOCATION"
+fi
 
 if [ -z "$MY_IP" ] || [ "$MY_IP" = "未知" ]; then
     log "ERROR" "无法获取服务器IP地址"
