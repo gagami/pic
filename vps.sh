@@ -1037,10 +1037,86 @@ fi
 # 备份原有sysctl配置
 create_backup "/etc/sysctl.conf" "sysctl配置"
 
-# 优化网络配置
-cat > /etc/sysctl.conf << EOF
+# 优化网络配置 - 根据系统类型选择参数
+if [[ "$DISTRO" == "debian" ]]; then
+    log "INFO" "应用Debian 12优化的网络配置..."
+    cat > /etc/sysctl.conf << EOF
 # =============================
-# 系统网络内核优化配置
+# Debian 12 网络内核优化配置
+# =============================
+
+# BBR拥塞控制算法
+net.core.default_qdisc = $QDISC
+net.ipv4.tcp_congestion_control = $CONGESTION_CONTROL
+
+# TCP窗口设置 (Debian 12兼容值)
+net.ipv4.tcp_window_scaling = 1
+net.ipv4.tcp_rmem = 4096 65536 16777216
+net.ipv4.tcp_wmem = 4096 65536 16777216
+net.ipv4.tcp_mem = 4096 65536 16777216
+
+# TCP连接设置 (保守值)
+net.ipv4.tcp_fin_timeout = 30
+net.ipv4.tcp_keepalive_time = 7200
+net.ipv4.tcp_keepalive_probes = 9
+net.ipv4.tcp_keepalive_intvl = 75
+net.ipv4.tcp_max_syn_backlog = 4096
+net.core.netdev_max_backlog = 5000
+
+# TCP Fast Open (仅在支持时启用)
+net.ipv4.tcp_fastopen = 1
+
+# IP和路由设置
+net.ipv4.ip_forward = 1
+net.ipv4.conf.all.forwarding = 1
+net.ipv4.conf.default.forwarding = 1
+
+# ARP设置 (Debian 12兼容值)
+net.ipv4.neigh.default.gc_thresh1 = 128
+net.ipv4.neigh.default.gc_thresh2 = 512
+net.ipv4.neigh.default.gc_thresh3 = 4096
+net.ipv4.neigh.default.gc_stale_time = 60
+
+# 防御设置
+net.ipv4.conf.all.rp_filter = 1
+net.ipv4.conf.default.rp_filter = 1
+net.ipv4.conf.all.log_martians = 1
+net.ipv4.conf.default.log_martians = 1
+net.ipv4.conf.all.accept_source_route = 0
+net.ipv4.conf.default.accept_source_route = 0
+net.ipv4.conf.all.accept_redirects = 0
+net.ipv4.conf.default.accept_redirects = 0
+net.ipv4.icmp_echo_ignore_broadcasts = 1
+net.ipv4.icmp_ignore_bogus_error_responses = 1
+
+# 系统性能调优
+kernel.pid_max = 32768
+kernel.threads-max = 65535
+vm.swappiness = 10
+vm.vfs_cache_pressure = 50
+vm.dirty_ratio = 15
+vm.dirty_background_ratio = 5
+
+# 文件系统优化
+fs.file-max = 1048576
+fs.inotify.max_user_instances = 8192
+fs.inotify.max_user_watches = 524288
+
+# 内存管理
+vm.overcommit_memory = 1
+vm.panic_on_oom = 0
+vm.min_free_kbytes = 65536
+
+# 其他优化 (Debian 12兼容)
+kernel.sysrq = 1
+kernel.nmi_watchdog = 0
+EOF
+else
+    # Ubuntu 22.04 配置
+    log "INFO" "应用Ubuntu 22.04优化的网络配置..."
+    cat > /etc/sysctl.conf << EOF
+# =============================
+# Ubuntu 22.04 网络内核优化配置
 # =============================
 
 # BBR拥塞控制算法
@@ -1120,19 +1196,87 @@ kernel.nmi_watchdog = 0
 kernel.printk_time = 10
 kernel.printk_devkmsg = 1
 EOF
+fi
 
-# 应用sysctl参数
+# 应用sysctl参数 - 增强版本支持检查
 if ! sysctl --system 2>&1 | tee /tmp/sysctl_error.log; then
     log "ERROR" "应用网络优化参数失败，尝试逐个验证..."
 
-    # 检查错误日志
+    # 显示错误信息
     if [[ -f /tmp/sysctl_error.log ]]; then
-        log "INFO" "详细错误信息已保存到 /tmp/sysctl_error.log"
         echo "=== 错误信息 ==="
         cat /tmp/sysctl_error.log
-        echo "=================="
+        echo "========================="
     fi
 
+    # 根据系统类型应用不同的验证策略
+    if [[ "$DISTRO" == "debian" ]]; then
+        log "INFO" "检测到Debian系统，应用兼容性检查..."
+        apply_debian_sysctl_params
+    else
+        log "INFO" "检测到Ubuntu系统，应用标准验证..."
+        apply_ubuntu_sysctl_params
+    fi
+
+    # 清理临时文件
+    rm -f /tmp/sysctl_error.log
+else
+    log "SUCCESS" "所有网络优化参数应用成功"
+fi
+log "SUCCESS" "网络优化配置完成"
+
+# Debian 12特定的sysctl参数应用函数
+apply_debian_sysctl_params() {
+    local params=(
+        "vm.swappiness=10"
+        "fs.file-max=1048576"
+        "net.ipv4.ip_forward=1"
+        "kernel.pid_max=32768"
+        "kernel.threads-max=65535"
+        "vm.vfs_cache_pressure=50"
+        "vm.dirty_ratio=15"
+        "vm.dirty_background_ratio=5"
+        "fs.inotify.max_user_watches=524288"
+    )
+
+    log "INFO" "应用Debian 12兼容参数..."
+    for param_set in "${params[@]}"; do
+        if sysctl -w "$param_set" 2>/dev/null; then
+            log "INFO" "✓ $param_set"
+        else
+            log "WARN" "✗ $param_set (参数不支持)"
+        fi
+    done
+
+    # 尝试应用网络参数（Debian 12兼容版本）
+    local network_params=(
+        "net.ipv4.tcp_window_scaling=1"
+        "net.ipv4.tcp_fin_timeout=30"
+        "net.ipv4.tcp_keepalive_time=7200"
+        "net.ipv4.tcp_max_syn_backlog=4096"
+        "net.core.netdev_max_backlog=5000"
+    )
+
+    log "INFO" "应用Debian 12网络参数..."
+    for param_set in "${network_params[@]}"; do
+        if sysctl -w "$param_set" 2>/dev/null; then
+            log "INFO" "✓ $param_set"
+        else
+            log "WARN" "✗ $param_set (网络参数不支持)"
+        fi
+    done
+
+    # 尝试应用BBR（如果支持）
+    if sysctl -w "net.ipv4.tcp_congestion_control=$CONGESTION_CONTROL" 2>/dev/null; then
+        log "SUCCESS" "✓ BBR拥塞控制: $CONGESTION_CONTROL"
+        sysctl -w "net.core.default_qdisc=$QDISC" 2>/dev/null || log "WARN" "队列调度器 $QDISC 不支持"
+    else
+        log "WARN" "BBR拥塞控制不支持，保持默认设置"
+    fi
+}
+
+# Ubuntu 22.04特定的sysctl参数应用函数
+apply_ubuntu_sysctl_params() {
     # 尝试应用配置文件，逐个验证参数
     for config_file in /etc/sysctl.d/*.conf; do
         if [[ -f "$config_file" ]]; then
@@ -1159,11 +1303,7 @@ if ! sysctl --system 2>&1 | tee /tmp/sysctl_error.log; then
             done < "$config_file"
         fi
     done
-
-    # 清理临时文件
-    rm -f /tmp/sysctl_error.log
-fi
-log "SUCCESS" "网络优化配置完成"
+}
 
 # ==============================
 # 清理和优化
