@@ -5,7 +5,7 @@
 set -e
 
 DOMAIN="ai.996111.xyz"
-WEB_ROOT="/var/www/downdownupup"
+WEB_ROOT="/var/www/api_mcp"
 NGINX_CONF="/etc/nginx/sites-available/$DOMAIN"
 EMAIL="admin@996111.xyz"  # 请替换为您的邮箱
 
@@ -22,6 +22,37 @@ if [[ $EUID -ne 0 ]]; then
    echo "请使用: sudo bash $0"
    exit 1
 fi
+
+# 清理之前的配置
+echo "清理之前的配置..."
+# 停止nginx服务
+systemctl stop nginx 2>/dev/null || true
+
+# 删除网站目录
+rm -rf /var/www/downdownupup
+rm -rf /var/www/api_mcp
+
+# 删除nginx配置
+rm -f /etc/nginx/sites-enabled/$DOMAIN
+rm -f /etc/nginx/sites-available/$DOMAIN
+rm -f /etc/nginx/sites-enabled/default
+
+# 删除SSL证书（可选）
+echo "是否删除之前的SSL证书？(y/n)"
+read -r DELETE_CERTS
+if [[ $DELETE_CERTS =~ ^[Yy]$ ]]; then
+    certbot delete --cert-name $DOMAIN 2>/dev/null || true
+    echo "SSL证书已删除"
+fi
+
+# 删除日志文件
+rm -f /var/www/logs/${DOMAIN}_access.log
+rm -f /var/www/logs/${DOMAIN}_error.log
+
+# 删除nginx临时文件
+rm -rf /var/nginx/client_temp 2>/dev/null || true
+
+echo "清理完成！"
 
 # 更新系统包
 echo "更新系统包..."
@@ -59,7 +90,7 @@ server {
     }
 
     # 文件同步目录 - 只允许程序访问
-    location /downdownupup/ {
+    location /api_mcp/ {
         alias $WEB_ROOT/;
 
         # 允许所有HTTP方法
@@ -90,7 +121,7 @@ server {
     }
 
     # 禁止访问其他路径
-    location ~ ^/(?!downdownupup/|health) {
+    location ~ ^/(?!api_mcp/|health) {
         return 404;
     }
 
@@ -181,7 +212,7 @@ server {
     }
 
     # 文件同步目录 - 只允许程序访问
-    location /downdownupup/ {
+    location /api_mcp/ {
         alias $WEB_ROOT/;
 
         # 启用WebDAV用于文件上传
@@ -223,7 +254,7 @@ server {
     }
 
     # 禁止访问其他所有路径
-    location ~ ^/(?!downdownupup/|health) {
+    location ~ ^/(?!api_mcp/|health) {
         return 404;
     }
 
@@ -269,8 +300,8 @@ echo "设置证书自动续期..."
 
 # 创建示例文件用于测试（仅程序可访问）
 echo "创建测试文件..."
-echo "This is a test file for web_sync.py" > $WEB_ROOT/test.txt
-echo '{"version": "1.0", "service": "file_sync"}' > $WEB_ROOT/config.json
+echo "This is a test file for api_mcp" > $WEB_ROOT/test.txt
+echo '{"version": "1.0", "service": "api_mcp"}' > $WEB_ROOT/config.json
 
 # 显示完成信息
 echo "=========================================="
@@ -278,14 +309,14 @@ echo "配置完成！"
 echo "=========================================="
 echo "网站地址: https://$DOMAIN"
 echo "直接访问域名: 返回404 (隐藏)"
-echo "文件同步路径: https://$DOMAIN/downdownupup/ (仅程序可访问)"
+echo "文件同步路径: https://$DOMAIN/api_mcp/ (仅程序可访问)"
 echo "健康检查: https://$DOMAIN/health"
 echo ""
 echo "安全配置:"
 echo "- 根目录访问返回404"
 echo "- 禁止目录浏览"
 echo "- 禁止访问隐藏文件"
-echo "- 只允许访问 /downdownupup/ 和 /health"
+echo "- 只允许访问 /api_mcp/ 和 /health"
 echo ""
 echo "文件上传配置:"
 echo "- 最大文件大小: 100MB"
@@ -293,8 +324,8 @@ echo "- 上传超时: 600秒"
 echo ""
 echo "程序测试命令:"
 echo "curl https://$DOMAIN/health"
-echo "curl https://$DOMAIN/downdownupup/test.txt"
-echo "curl -X POST -F \"file=@/path/to/file\" https://$DOMAIN/downdownupup/"
+echo "curl https://$DOMAIN/api_mcp/test.txt"
+echo "curl -X POST -F \"file=@/path/to/file\" https://$DOMAIN/api_mcp/"
 echo ""
 echo "浏览器访问测试:"
 echo "curl https://$DOMAIN/ (应该返回404)"
