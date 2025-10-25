@@ -69,6 +69,12 @@ mkdir -p /var/www/logs
 chown -R www-data:www-data $WEB_ROOT
 chmod -R 755 $WEB_ROOT
 
+# 创建认证密码文件
+echo "创建认证密码文件..."
+USERNAME="apiuser"
+PASSWORD="api_mcp_2024_secure"
+htpasswd -cb /etc/nginx/.htpasswd "$USERNAME" "$PASSWORD"
+
 # 创建初始nginx配置（HTTP only，用于证书申请）
 echo "创建初始Nginx配置..."
 cat > $NGINX_CONF << EOF
@@ -89,24 +95,38 @@ server {
         return 404;
     }
 
-    # 文件同步目录 - 只允许程序访问
+    # 文件同步目录 - 密码保护的目录访问和文件上传
     location /api_mcp/ {
         alias $WEB_ROOT/;
 
-        # 允许所有HTTP方法
+        # HTTP基础认证
+        auth_basic "API MCP Access";
+        auth_basic_user_file /etc/nginx/.htpasswd;
+
+        # 启用目录列表
+        autoindex on;
+        autoindex_exact_size on;
+        autoindex_localtime on;
+        autoindex_format html;
+
+        # 启用WebDAV用于文件上传
         dav_methods PUT DELETE MKCOL COPY MOVE;
         dav_access group:rw all:rw;
-
-        # 文件上传大小限制：100MB
-        client_max_body_size 100M;
 
         # 创建目录权限
         create_full_put_path on;
 
+        # 文件上传大小限制：100MB
+        client_max_body_size 100M;
+
+        # 大文件上传超时设置
+        client_body_timeout 600s;
+        send_timeout 600s;
+
         # CORS设置
-        add_header 'Access-Control-Allow-Origin' '*';
-        add_header 'Access-Control-Allow-Methods' 'GET, POST, PUT, DELETE, OPTIONS';
-        add_header 'Access-Control-Allow-Headers' 'DNT,User-Agent,X-Requested-With,If-Modified-Since,Cache-Control,Content-Type,Range';
+        add_header 'Access-Control-Allow-Origin' '*' always;
+        add_header 'Access-Control-Allow-Methods' 'GET, POST, PUT, DELETE, OPTIONS' always;
+        add_header 'Access-Control-Allow-Headers' 'DNT,User-Agent,X-Requested-With,If-Modified-Since,Cache-Control,Content-Type,Range' always;
 
         # OPTIONS请求处理
         if (\$request_method = 'OPTIONS') {
@@ -117,6 +137,13 @@ server {
             add_header 'Content-Type' 'text/plain; charset=utf-8';
             add_header 'Content-Length' 0;
             return 204;
+        }
+
+        # 下载文件时设置下载头
+        if (\$request_method = GET) {
+            add_header Content-Disposition "attachment";
+            expires 1d;
+            add_header Cache-Control "public, immutable";
         }
     }
 
@@ -211,9 +238,19 @@ server {
         return 404;
     }
 
-    # 文件同步目录 - 只允许程序访问
+    # 文件同步目录 - 密码保护的目录访问和文件上传
     location /api_mcp/ {
         alias $WEB_ROOT/;
+
+        # HTTP基础认证
+        auth_basic "API MCP Access";
+        auth_basic_user_file /etc/nginx/.htpasswd;
+
+        # 启用目录列表
+        autoindex on;
+        autoindex_exact_size on;
+        autoindex_localtime on;
+        autoindex_format html;
 
         # 启用WebDAV用于文件上传
         dav_methods PUT DELETE MKCOL COPY MOVE;
@@ -309,30 +346,38 @@ echo "配置完成！"
 echo "=========================================="
 echo "网站地址: https://$DOMAIN"
 echo "直接访问域名: 返回404 (隐藏)"
-echo "文件同步路径: https://$DOMAIN/api_mcp/ (仅程序可访问)"
-echo "健康检查: https://$DOMAIN/health"
+echo "文件同步路径: https://$DOMAIN/api_mcp/ (需要认证)"
+echo "健康检查: https://$DOMAIN/health (无需认证)"
+echo ""
+echo "🔐 认证信息："
+echo "   用户名: $USERNAME"
+echo "   密码: $PASSWORD"
 echo ""
 echo "安全配置:"
 echo "- 根目录访问返回404"
-echo "- 禁止目录浏览"
+echo "- /api_mcp/目录需要密码认证"
+echo "- 启用目录列表功能"
 echo "- 禁止访问隐藏文件"
 echo "- 只允许访问 /api_mcp/ 和 /health"
 echo ""
 echo "文件上传配置:"
 echo "- 最大文件大小: 100MB"
 echo "- 上传超时: 600秒"
+echo "- WebDAV和目录访问都需要认证"
 echo ""
 echo "程序测试命令:"
 echo "curl https://$DOMAIN/health"
-echo "curl https://$DOMAIN/api_mcp/test.txt"
-echo "curl -X POST -F \"file=@/path/to/file\" https://$DOMAIN/api_mcp/"
+echo "curl -u $USERNAME:$PASSWORD https://$DOMAIN/api_mcp/test.txt"
+echo "curl -X PUT -u $USERNAME:$PASSWORD --data-binary @file.dll https://$DOMAIN/api_mcp/file.dll"
 echo ""
 echo "浏览器访问测试:"
-echo "curl https://$DOMAIN/ (应该返回404)"
+echo "https://$DOMAIN/ (应该返回404)"
+echo "https://$DOMAIN/api_mcp/ (需要输入用户名和密码)"
 echo ""
 echo "证书文件位置:"
 echo "证书: /etc/letsencrypt/live/$DOMAIN/fullchain.pem"
 echo "私钥: /etc/letsencrypt/live/$DOMAIN/privkey.pem"
+echo "密码文件: /etc/nginx/.htpasswd"
 echo ""
 echo "日志文件:"
 echo "访问日志: /var/www/logs/${DOMAIN}_access.log"
